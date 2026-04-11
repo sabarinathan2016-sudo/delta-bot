@@ -190,7 +190,7 @@ def monitor(ce, pe, ce_sl, pe_sl):
 # =========================
 
 def run_bot():
-    send_telegram("Bot started successfully ✅")
+
     global TRADE_DONE_DATE
 
     while True:

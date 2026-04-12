@@ -134,11 +134,11 @@ def find_strikes(spot):
     
 if ce_symbol is None or pe_symbol is None:
     send_telegram("❌ Error: No valid strikes found")
-    return
+    exit()
     
 if ce_prem is None or pe_prem is None:
     send_telegram("❌ Error: Premium fetch failed")
-    return
+    exit()
 # =========================
 # 📤 ORDER
 # =========================
@@ -242,6 +242,6 @@ spot = get_btc_price()
 
 if spot is None:
     send_telegram("❌ Error: BTC price not fetched")
-    return
+    exit()
 
 run_bot()

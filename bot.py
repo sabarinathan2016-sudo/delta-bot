@@ -50,16 +50,26 @@ def generate_signature(method, path, body=""):
 # =========================
 
 def get_btc_price():
-    return float(requests.get(f"{BASE_URL}/v2/tickers/BTCUSD").json()['result']['last_price'])
-
+    try:
+        res = requests.get(f"{BASE_URL}/v2/tickers/BTCUSD").json()
+        if res and res.get('result'):
+            return float(res['result']['last_price'])
+    except Exception as e:
+        send_telegram(f"BTC fetch error: {e}")
+    return None
 
 def get_products():
     return requests.get(f"{BASE_URL}/v2/products").json()['result']
 
 
 def get_premium(symbol):
-    return float(requests.get(f"{BASE_URL}/v2/tickers/{symbol}").json()['result']['last_price'])
-
+    try:
+        res = requests.get(f"{BASE_URL}/v2/tickers/{symbol}").json()
+        if res and res.get('result'):
+            return float(res['result']['last_price'])
+    except Exception as e:
+        send_telegram(f"Premium error {symbol}: {e}")
+    return None
 
 # =========================
 # 🎯 TODAY EXPIRY FILTER
@@ -121,8 +131,14 @@ def find_strikes(spot):
         attempts += 1
 
     return ce_symbol, pe_symbol, ce_price, pe_price
-
-
+    
+if ce_symbol is None or pe_symbol is None:
+    send_telegram("❌ Error: No valid strikes found")
+    return
+    
+if ce_prem is None or pe_prem is None:
+    send_telegram("❌ Error: Premium fetch failed")
+    return
 # =========================
 # 📤 ORDER
 # =========================
@@ -222,6 +238,10 @@ def run_bot():
                 send_telegram(f"ERROR: {e}")
 
         time.sleep(10)
+spot = get_btc_price()
 
+if spot is None:
+    send_telegram("❌ Error: BTC price not fetched")
+    return
 
 run_bot()

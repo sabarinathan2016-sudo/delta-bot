@@ -58,9 +58,16 @@ def get_btc_price():
         send_telegram(f"BTC fetch error: {e}")
     return None
 
-def get_products():
-    return requests.get(f"{BASE_URL}/v2/products").json()['result']
 
+def get_products():
+    try:
+        res = requests.get(f"{BASE_URL}/v2/products").json()
+        if res and res.get('result'):
+            return res['result']
+    except Exception as e:
+        send_telegram(f"Products error: {e}")
+    return []
+    
 
 def get_premium(symbol):
     try:
@@ -70,6 +77,7 @@ def get_premium(symbol):
     except Exception as e:
         send_telegram(f"Premium error {symbol}: {e}")
     return None
+
 
 # =========================
 # 🎯 TODAY EXPIRY FILTER
@@ -95,8 +103,14 @@ def find_strikes(spot):
 
     options = get_today_options()
 
+    if not options:
+        return None, None, None, None
+
     ce_list = [o for o in options if o['option_type'] == 'call']
     pe_list = [o for o in options if o['option_type'] == 'put']
+
+    if not ce_list or not pe_list:
+        return None, None, None, None
 
     ce_target = spot * 1.02
     pe_target = spot * 0.98
@@ -109,6 +123,9 @@ def find_strikes(spot):
 
     ce_price = get_premium(ce_symbol)
     pe_price = get_premium(pe_symbol)
+
+    if ce_price is None or pe_price is None:
+        return None, None, None, None
 
     # 🔥 Premium balance
     attempts = 0
@@ -128,17 +145,14 @@ def find_strikes(spot):
         ce_price = get_premium(ce_symbol)
         pe_price = get_premium(pe_symbol)
 
+        if ce_price is None or pe_price is None:
+            return None, None, None, None
+
         attempts += 1
 
     return ce_symbol, pe_symbol, ce_price, pe_price
-    
-if ce_symbol is None or pe_symbol is None:
-    send_telegram("❌ Error: No valid strikes found")
-    exit()
-    
-if ce_prem is None or pe_prem is None:
-    send_telegram("❌ Error: Premium fetch failed")
-    exit()
+
+
 # =========================
 # 📤 ORDER
 # =========================
@@ -184,7 +198,12 @@ def monitor(ce, pe, ce_sl, pe_sl):
         ce_price = get_premium(ce)
         pe_price = get_premium(pe)
 
-        # SL
+        if ce_price is None or pe_price is None:
+            send_telegram("⚠️ Price fetch issue, retrying...")
+            time.sleep(5)
+            continue
+
+        # SL HIT
         if ce_price >= ce_sl or pe_price >= pe_sl:
             send_telegram("SL HIT → EXIT BOTH")
             place_order(ce, "buy")
@@ -218,7 +237,19 @@ def run_bot():
             try:
                 spot = get_btc_price()
 
+                if spot is None:
+                    send_telegram("❌ Error: BTC price not fetched")
+                    continue
+
                 ce, pe, ce_prem, pe_prem = find_strikes(spot)
+
+                if ce is None or pe is None:
+                    send_telegram("❌ Error: Strike selection failed")
+                    continue
+
+                if ce_prem is None or pe_prem is None:
+                    send_telegram("❌ Error: Premium fetch failed")
+                    continue
 
                 ce_sl = ce_prem * 5
                 pe_sl = pe_prem * 5
@@ -238,10 +269,10 @@ def run_bot():
                 send_telegram(f"ERROR: {e}")
 
         time.sleep(10)
-spot = get_btc_price()
 
-if spot is None:
-    send_telegram("❌ Error: BTC price not fetched")
-    exit()
+
+# =========================
+# ▶️ START
+# =========================
 
 run_bot()

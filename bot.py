@@ -46,28 +46,34 @@ def generate_signature(method, path, body=""):
 
 
 # =========================
-# 📊 MARKET DATA
+# 📊 BTC PRICE (FIXED)
 # =========================
 
 def get_btc_price():
     try:
-        res = requests.get(f"{BASE_URL}/v2/tickers/BTCUSD").json()
-        if res and res.get('result'):
-            return float(res['result']['last_price'])
+        res = requests.get(f"{BASE_URL}/v2/tickers").json()
+
+        if res and res.get("result"):
+            for item in res["result"]:
+                if item["symbol"] == "BTCUSD":
+                    return float(item["last_price"])
+
     except Exception as e:
         send_telegram(f"BTC fetch error: {e}")
+
     return None
 
 
+# =========================
+# 📊 MARKET DATA
+# =========================
+
 def get_products():
     try:
-        res = requests.get(f"{BASE_URL}/v2/products").json()
-        if res and res.get('result'):
-            return res['result']
-    except Exception as e:
-        send_telegram(f"Products error: {e}")
-    return []
-    
+        return requests.get(f"{BASE_URL}/v2/products").json()['result']
+    except:
+        return []
+
 
 def get_premium(symbol):
     try:
@@ -96,7 +102,7 @@ def get_today_options():
 
 
 # =========================
-# 🎯 STRIKE LOGIC
+# 🎯 STRIKE LOGIC (SAFE)
 # =========================
 
 def find_strikes(spot):
@@ -127,7 +133,6 @@ def find_strikes(spot):
     if ce_price is None or pe_price is None:
         return None, None, None, None
 
-    # 🔥 Premium balance
     attempts = 0
     while abs(ce_price - pe_price) > 8 and attempts < 5:
 
@@ -180,10 +185,13 @@ def place_order(symbol, side):
         "Content-Type": "application/json"
     }
 
-    res = requests.post(url, headers=headers, data=body)
-    send_telegram(f"{side.upper()} {symbol}")
-
-    return res.json()
+    try:
+        res = requests.post(url, headers=headers, data=body)
+        send_telegram(f"{side.upper()} {symbol}")
+        return res.json()
+    except Exception as e:
+        send_telegram(f"Order error: {e}")
+        return None
 
 
 # =========================
@@ -199,11 +207,10 @@ def monitor(ce, pe, ce_sl, pe_sl):
         pe_price = get_premium(pe)
 
         if ce_price is None or pe_price is None:
-            send_telegram("⚠️ Price fetch issue, retrying...")
             time.sleep(5)
             continue
 
-        # SL HIT
+        # SL
         if ce_price >= ce_sl or pe_price >= pe_sl:
             send_telegram("SL HIT → EXIT BOTH")
             place_order(ce, "buy")
@@ -211,7 +218,7 @@ def monitor(ce, pe, ce_sl, pe_sl):
             break
 
         # TIME EXIT
-        if now.hour == 17 and now.minute == 15:
+        if now.hour == 17 and now.minute >= 15:
             send_telegram("TIME EXIT")
             place_order(ce, "buy")
             place_order(pe, "buy")
@@ -221,7 +228,7 @@ def monitor(ce, pe, ce_sl, pe_sl):
 
 
 # =========================
-# 🤖 MAIN
+# 🤖 MAIN BOT
 # =========================
 
 def run_bot():
@@ -232,23 +239,22 @@ def run_bot():
         now = datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
         today = now.date()
 
-        if now.hour == 8 and now.minute == 15 and TRADE_DONE_DATE != today:
+        # 🔁 Retry after 8:15 until success
+        if now.hour == 8 and now.minute >= 15 and TRADE_DONE_DATE != today:
 
             try:
                 spot = get_btc_price()
 
                 if spot is None:
-                    send_telegram("❌ Error: BTC price not fetched")
+                    send_telegram("❌ BTC price fetch failed... retrying")
+                    time.sleep(10)
                     continue
 
                 ce, pe, ce_prem, pe_prem = find_strikes(spot)
 
-                if ce is None or pe is None:
-                    send_telegram("❌ Error: Strike selection failed")
-                    continue
-
-                if ce_prem is None or pe_prem is None:
-                    send_telegram("❌ Error: Premium fetch failed")
+                if None in (ce, pe, ce_prem, pe_prem):
+                    send_telegram("❌ Strike selection failed... retrying")
+                    time.sleep(10)
                     continue
 
                 ce_sl = ce_prem * 5
@@ -272,7 +278,7 @@ def run_bot():
 
 
 # =========================
-# ▶️ START
+# 🚀 START
 # =========================
 
 run_bot()

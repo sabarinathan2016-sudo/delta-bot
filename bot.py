@@ -7,7 +7,7 @@ import json
 import os
 
 # =========================
-# 🔐 CONFIG FROM ENV
+# 🔐 CONFIG
 # =========================
 
 API_KEY = os.getenv("API_KEY")
@@ -18,10 +18,9 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 BASE_URL = "https://api.delta.exchange"
 
-LOT_SIZE = 1   # 🔥 KEEP 1 FOR TESTING FIRST
+LOT_SIZE = 10
 TRADE_DONE_DATE = None
-
-LAST_ERROR_TIME = 0
+ENTRY_TRIGGERED = False  # 🔥 prevent spam
 
 
 # =========================
@@ -36,15 +35,6 @@ def send_telegram(msg):
         pass
 
 
-def send_error(msg):
-    global LAST_ERROR_TIME
-    now = time.time()
-
-    if now - LAST_ERROR_TIME > 60:
-        send_telegram(msg)
-        LAST_ERROR_TIME = now
-
-
 # =========================
 # 🔐 SIGNATURE
 # =========================
@@ -57,104 +47,66 @@ def generate_signature(method, path, body=""):
 
 
 # =========================
-# 📊 BTC PRICE (WITH FALLBACK)
+# 📊 BTC PRICE (FIXED)
 # =========================
 
 def get_btc_price():
     try:
-        # Primary: Delta
-        res = requests.get(f"{BASE_URL}/v2/tickers/BTCUSD", timeout=5)
+        res = requests.get(f"{BASE_URL}/v2/tickers/BTCUSD").json()
 
-        if res.status_code == 200:
-            data = res.json()
-            if data.get("result"):
-                price = data["result"].get("last_price")
-                if price:
-                    return float(price)
-
-        # Backup: Binance
-        res2 = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=5)
-        data2 = res2.json()
-        return float(data2["price"])
+        if res and res.get("result"):
+            return float(res["result"]["last_price"])
 
     except Exception as e:
-        send_error(f"❌ BTC fetch failed: {e}")
-        return None
+        send_telegram(f"BTC fetch error: {e}")
+
+    return None
 
 
 # =========================
-# 📦 PRODUCTS
+# 📊 PRODUCTS
 # =========================
 
 def get_products():
     try:
-        res = requests.get(f"{BASE_URL}/v2/products", timeout=5)
-        return res.json().get("result", [])
+        res = requests.get(f"{BASE_URL}/v2/products").json()
+        return res.get("result", [])
     except:
         return []
 
 
 def get_premium(symbol):
     try:
-        res = requests.get(f"{BASE_URL}/v2/tickers/{symbol}", timeout=5).json()
+        res = requests.get(f"{BASE_URL}/v2/tickers/{symbol}").json()
         if res and res.get("result"):
             return float(res["result"]["last_price"])
     except:
-        return None
+        pass
     return None
 
 
 # =========================
-# 🎯 TODAY OPTIONS
-# =========================
-
-def get_today_options():
-    products = get_products()
-    today = datetime.datetime.utcnow().date()
-
-    return [
-        p for p in products
-        if p.get("contract_type") == "option"
-        and "BTC" in p.get("symbol", "")
-        and p.get("expiry_date")
-        and datetime.datetime.strptime(p["expiry_date"], "%Y-%m-%d").date() == today
-    ]
-
-
-# =========================
-# 🎯 STRIKE LOGIC
+# 🎯 STRIKE SELECTION
 # =========================
 
 def find_strikes(spot):
 
-    options = get_today_options()
+    options = get_products()
 
-    if not options:
-        send_error("❌ No options found")
-        return None, None, None, None
-
-    ce_list = [o for o in options if o.get("option_type") == "call"]
-    pe_list = [o for o in options if o.get("option_type") == "put"]
+    ce_list = [o for o in options if o.get('option_type') == 'call' and 'BTC' in o.get('symbol', '')]
+    pe_list = [o for o in options if o.get('option_type') == 'put' and 'BTC' in o.get('symbol', '')]
 
     if not ce_list or not pe_list:
-        send_error("❌ CE/PE not found")
         return None, None, None, None
 
-    ce_target = spot * 1.02
-    pe_target = spot * 0.98
+    ce = min(ce_list, key=lambda x: abs(float(x['strike_price']) - spot))
+    pe = min(pe_list, key=lambda x: abs(float(x['strike_price']) - spot))
 
-    ce = min(ce_list, key=lambda x: abs(float(x["strike_price"]) - ce_target))
-    pe = min(pe_list, key=lambda x: abs(float(x["strike_price"]) - pe_target))
-
-    ce_symbol = ce["symbol"]
-    pe_symbol = pe["symbol"]
+    ce_symbol = ce['symbol']
+    pe_symbol = pe['symbol']
 
     ce_price = get_premium(ce_symbol)
     pe_price = get_premium(pe_symbol)
-
-    if ce_price is None or pe_price is None:
-        send_error("❌ Premium fetch failed")
-        return None, None, None, None
 
     return ce_symbol, pe_symbol, ce_price, pe_price
 
@@ -200,23 +152,26 @@ def place_order(symbol, side):
 def monitor(ce, pe, ce_sl, pe_sl):
 
     while True:
-        now = datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
 
         ce_price = get_premium(ce)
         pe_price = get_premium(pe)
+
+        now = datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
 
         if ce_price is None or pe_price is None:
             time.sleep(5)
             continue
 
+        # SL
         if ce_price >= ce_sl or pe_price >= pe_sl:
-            send_telegram("SL HIT → EXIT BOTH")
+            send_telegram("❌ SL HIT → EXIT")
             place_order(ce, "buy")
             place_order(pe, "buy")
             break
 
-        if now.hour == 17 and now.minute == 15:
-            send_telegram("TIME EXIT")
+        # TIME EXIT
+        if now.hour == 17 and now.minute >= 15:
+            send_telegram("⏰ TIME EXIT")
             place_order(ce, "buy")
             place_order(pe, "buy")
             break
@@ -225,57 +180,64 @@ def monitor(ce, pe, ce_sl, pe_sl):
 
 
 # =========================
-# 🤖 MAIN
+# 🤖 MAIN BOT
 # =========================
 
 def run_bot():
 
-    global TRADE_DONE_DATE
+    global TRADE_DONE_DATE, ENTRY_TRIGGERED
 
     while True:
+
         now = datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
         today = now.date()
 
-        # 🔥 FORCE TEST MODE
-        if True and TRADE_DONE_DATE != today:
+        # Reset daily trigger
+        if TRADE_DONE_DATE != today:
+            ENTRY_TRIGGERED = False
+
+        # ENTRY WINDOW (8:15 to 8:16)
+        if now.hour == 8 and now.minute == 15 and not ENTRY_TRIGGERED:
+
+            ENTRY_TRIGGERED = True  # 🔥 avoid spam
 
             send_telegram("⏰ Entry condition triggered")
 
             spot = get_btc_price()
 
             if spot is None:
-                time.sleep(10)
+                send_telegram("❌ BTC price fetch failed")
+                time.sleep(60)
                 continue
 
             ce, pe, ce_prem, pe_prem = find_strikes(spot)
 
-            if not ce or not pe:
-                time.sleep(10)
+            if not ce or not pe or not ce_prem or not pe_prem:
+                send_telegram("❌ Strike selection failed")
+                time.sleep(60)
                 continue
 
-            try:
-                ce_sl = ce_prem * 5
-                pe_sl = pe_prem * 5
+            ce_sl = ce_prem * 5
+            pe_sl = pe_prem * 5
 
-                send_telegram(
-                    f"ENTRY\nSPOT:{spot}\nCE:{ce}@{ce_prem}\nPE:{pe}@{pe_prem}"
-                )
+            send_telegram(
+                f"ENTRY\nSPOT:{spot}\nCE:{ce}@{ce_prem}\nPE:{pe}@{pe_prem}"
+            )
 
-                place_order(ce, "sell")
-                place_order(pe, "sell")
+            place_order(ce, "sell")
+            place_order(pe, "sell")
 
-                TRADE_DONE_DATE = today
+            TRADE_DONE_DATE = today
 
-                monitor(ce, pe, ce_sl, pe_sl)
+            monitor(ce, pe, ce_sl, pe_sl)
 
-            except Exception as e:
-                send_error(f"ERROR: {e}")
-
-        time.sleep(10)
+        time.sleep(5)
 
 
 # =========================
 # 🚀 START
 # =========================
 
-run_bot()
+if __name__ == "__main__":
+    send_telegram("🤖 Bot Started")
+    run_bot()

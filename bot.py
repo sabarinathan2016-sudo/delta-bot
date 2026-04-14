@@ -241,7 +241,8 @@ def run_bot():
         now = datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
         today = now.date()
 
-        if True: and TRADE_DONE_DATE != today:
+        if True and TRADE_DONE_DATE != today:
+    send_telegram("⏰ Entry condition triggered")
 
             spot = get_btc_price()
 

@@ -21,6 +21,8 @@ BASE_URL = "https://api.delta.exchange"
 LOT_SIZE = 10
 TRADE_DONE_DATE = None
 
+LAST_ERROR_TIME = 0  # prevent spam
+
 
 # =========================
 # 📲 TELEGRAM
@@ -32,6 +34,16 @@ def send_telegram(msg):
         requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
     except:
         pass
+
+
+def send_error(msg):
+    global LAST_ERROR_TIME
+    now = time.time()
+
+    # send error only once every 60 sec
+    if now - LAST_ERROR_TIME > 60:
+        send_telegram(msg)
+        LAST_ERROR_TIME = now
 
 
 # =========================
@@ -46,45 +58,43 @@ def generate_signature(method, path, body=""):
 
 
 # =========================
-# 📊 BTC PRICE (STRONG)
+# 📊 BTC PRICE (FIXED)
 # =========================
 
 def get_btc_price():
     try:
-        res = requests.get(f"{BASE_URL}/v2/tickers", timeout=5).json()
+        res = requests.get(f"{BASE_URL}/v2/tickers/BTCUSD", timeout=5)
 
-        if res and res.get("result"):
-            for item in res["result"]:
-                if item.get("symbol") == "BTCUSD" and item.get("last_price"):
-                    return float(item["last_price"])
+        if res.status_code != 200:
+            send_error(f"❌ HTTP Error: {res.status_code}")
+            return None
+
+        data = res.json()
+
+        # safe extraction
+        if 'result' in data and data['result']:
+            price = data['result'].get('last_price')
+            if price:
+                return float(price)
+
+        send_error("❌ BTC price missing in response")
+        return None
+
     except Exception as e:
-        print(f"Delta BTC fetch error: {e}")
-
-    # 🔁 Backup (Binance)
-    try:
-        res = requests.get(
-            "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT",
-            timeout=5
-        ).json()
-        return float(res["price"])
-    except Exception as e:
-        send_telegram(f"❌ Backup BTC fetch failed: {e}")
-
-    return None
+        send_error(f"❌ BTC fetch error: {e}")
+        return None
 
 
 # =========================
-# 📊 MARKET DATA
+# 📦 PRODUCTS
 # =========================
 
 def get_products():
     try:
-        res = requests.get(f"{BASE_URL}/v2/products", timeout=5).json()
-        if res and res.get("result"):
-            return res["result"]
+        res = requests.get(f"{BASE_URL}/v2/products", timeout=5)
+        return res.json().get('result', [])
     except:
-        pass
-    return []
+        return []
 
 
 def get_premium(symbol):
@@ -93,12 +103,12 @@ def get_premium(symbol):
         if res and res.get('result'):
             return float(res['result']['last_price'])
     except:
-        pass
+        return None
     return None
 
 
 # =========================
-# 🎯 TODAY EXPIRY FILTER
+# 🎯 TODAY OPTIONS
 # =========================
 
 def get_today_options():
@@ -107,8 +117,9 @@ def get_today_options():
 
     return [
         p for p in products
-        if p['contract_type'] == 'option'
-        and 'BTC' in p['symbol']
+        if p.get('contract_type') == 'option'
+        and 'BTC' in p.get('symbol', '')
+        and p.get('expiry_date')
         and datetime.datetime.strptime(p['expiry_date'], "%Y-%m-%d").date() == today
     ]
 
@@ -122,12 +133,14 @@ def find_strikes(spot):
     options = get_today_options()
 
     if not options:
+        send_error("❌ No options found")
         return None, None, None, None
 
-    ce_list = [o for o in options if o['option_type'] == 'call']
-    pe_list = [o for o in options if o['option_type'] == 'put']
+    ce_list = [o for o in options if o.get('option_type') == 'call']
+    pe_list = [o for o in options if o.get('option_type') == 'put']
 
     if not ce_list or not pe_list:
+        send_error("❌ CE/PE not found")
         return None, None, None, None
 
     ce_target = spot * 1.02
@@ -143,29 +156,8 @@ def find_strikes(spot):
     pe_price = get_premium(pe_symbol)
 
     if ce_price is None or pe_price is None:
+        send_error("❌ Premium fetch failed")
         return None, None, None, None
-
-    attempts = 0
-    while abs(ce_price - pe_price) > 8 and attempts < 5:
-
-        if ce_price > pe_price:
-            ce_target *= 1.01
-        else:
-            pe_target *= 0.99
-
-        ce = min(ce_list, key=lambda x: abs(float(x['strike_price']) - ce_target))
-        pe = min(pe_list, key=lambda x: abs(float(x['strike_price']) - pe_target))
-
-        ce_symbol = ce['symbol']
-        pe_symbol = pe['symbol']
-
-        ce_price = get_premium(ce_symbol)
-        pe_price = get_premium(pe_symbol)
-
-        if ce_price is None or pe_price is None:
-            return None, None, None, None
-
-        attempts += 1
 
     return ce_symbol, pe_symbol, ce_price, pe_price
 
@@ -197,13 +189,11 @@ def place_order(symbol, side):
         "Content-Type": "application/json"
     }
 
-    try:
-        res = requests.post(url, headers=headers, data=body, timeout=5)
-        send_telegram(f"{side.upper()} {symbol}")
-        return res.json()
-    except Exception as e:
-        send_telegram(f"❌ Order error: {e}")
-        return None
+    res = requests.post(url, headers=headers, data=body)
+
+    send_telegram(f"{side.upper()} {symbol}")
+
+    return res.json()
 
 
 # =========================
@@ -222,13 +212,15 @@ def monitor(ce, pe, ce_sl, pe_sl):
             time.sleep(5)
             continue
 
+        # SL
         if ce_price >= ce_sl or pe_price >= pe_sl:
             send_telegram("SL HIT → EXIT BOTH")
             place_order(ce, "buy")
             place_order(pe, "buy")
             break
 
-        if now.hour == 17 and now.minute >= 15:
+        # TIME EXIT
+        if now.hour == 17 and now.minute == 15:
             send_telegram("TIME EXIT")
             place_order(ce, "buy")
             place_order(pe, "buy")
@@ -238,7 +230,7 @@ def monitor(ce, pe, ce_sl, pe_sl):
 
 
 # =========================
-# 🤖 MAIN BOT
+# 🤖 MAIN
 # =========================
 
 def run_bot():
@@ -249,23 +241,21 @@ def run_bot():
         now = datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
         today = now.date()
 
-        if now.hour == 8 and now.minute >= 15 and TRADE_DONE_DATE != today:
+        if now.hour == 8 and now.minute == 15 and TRADE_DONE_DATE != today:
+
+            spot = get_btc_price()
+
+            if spot is None:
+                time.sleep(10)
+                continue
+
+            ce, pe, ce_prem, pe_prem = find_strikes(spot)
+
+            if not ce or not pe:
+                time.sleep(10)
+                continue
 
             try:
-                spot = get_btc_price()
-
-                if spot is None:
-                    print("BTC fetch failed... retrying")
-                    time.sleep(10)
-                    continue
-
-                ce, pe, ce_prem, pe_prem = find_strikes(spot)
-
-                if None in (ce, pe, ce_prem, pe_prem):
-                    print("Strike selection failed... retrying")
-                    time.sleep(10)
-                    continue
-
                 ce_sl = ce_prem * 5
                 pe_sl = pe_prem * 5
 
@@ -281,7 +271,7 @@ def run_bot():
                 monitor(ce, pe, ce_sl, pe_sl)
 
             except Exception as e:
-                send_telegram(f"❌ ERROR: {e}")
+                send_error(f"ERROR: {e}")
 
         time.sleep(10)
 

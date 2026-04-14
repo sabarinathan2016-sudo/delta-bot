@@ -241,7 +241,7 @@ def run_bot():
         now = datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
         today = now.date()
 
-        if now.hour == 8 and now.minute == 15 and TRADE_DONE_DATE != today:
+        if True: and TRADE_DONE_DATE != today:
 
             spot = get_btc_price()
 

@@ -20,7 +20,7 @@ BASE_URL = "https://api.delta.exchange"
 
 LOT_SIZE = 10
 TRADE_DONE_DATE = None
-ENTRY_TRIGGERED = False  # 🔥 prevent spam
+ENTRY_TRIGGERED = False
 
 
 # =========================
@@ -36,6 +36,18 @@ def send_telegram(msg):
 
 
 # =========================
+# 🌐 GET SERVER IP (IMPORTANT)
+# =========================
+
+def get_server_ip():
+    try:
+        ip = requests.get("https://api.ipify.org").text
+        send_telegram(f"🌐 SERVER IP: {ip}")
+    except:
+        send_telegram("❌ Unable to fetch server IP")
+
+
+# =========================
 # 🔐 SIGNATURE
 # =========================
 
@@ -47,7 +59,7 @@ def generate_signature(method, path, body=""):
 
 
 # =========================
-# 📊 BTC PRICE (FIXED)
+# 📊 BTC PRICE
 # =========================
 
 def get_btc_price():
@@ -192,14 +204,14 @@ def run_bot():
         now = datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
         today = now.date()
 
-        # Reset daily trigger
+        # Reset daily
         if TRADE_DONE_DATE != today:
             ENTRY_TRIGGERED = False
 
-        # ENTRY WINDOW (8:15 to 8:16)
+        # ENTRY TIME
         if now.hour == 8 and now.minute == 15 and not ENTRY_TRIGGERED:
 
-            ENTRY_TRIGGERED = True  # 🔥 avoid spam
+            ENTRY_TRIGGERED = True
 
             send_telegram("⏰ Entry condition triggered")
 
@@ -240,4 +252,8 @@ def run_bot():
 
 if __name__ == "__main__":
     send_telegram("🤖 Bot Started")
+
+    # 🔥 IMPORTANT → get Railway IP
+    get_server_ip()
+
     run_bot()
